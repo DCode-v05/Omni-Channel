@@ -1,0 +1,38 @@
+# API
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+pydantic==2.6.4
+python-multipart==0.0.9
+python-dotenv==1.0.1
+
+# LLM
+groq==1.0.0
+
+# Audio
+openai-whisper==20231117
+torch==2.10.0
+
+# Document
+pdfplumber==0.11.0
+python-docx==1.1.2
+
+# Semantic
+sentence-transformers==5.2.0
+transformers==4.57.6
+huggingface-hub==0.36.0
+tokenizers==0.22.2
+scikit-learn==1.7.2
+scipy==1.15.3
+numpy==1.26.4
+
+# Image
+paddlepaddle==2.6.2
+paddleocr==2.7.0.3
+paddlex==3.3.13
+opencv-python==4.6.0.66
+opencv-contrib-python==4.6.0.66
+opencv-python-headless==4.6.0.66
+Pillow==12.1.0
+shapely==2.1.2
+pyclipper==1.4.0
+lmdb==1.7.5
