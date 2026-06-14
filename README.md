@@ -60,7 +60,7 @@ The primary goal of Omni-Channel is to eliminate the friction between different 
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/september-platforms/omnichannel-input.git
+git clone https://github.com/DCode-v05/Omni-Channel.git
 cd omnichannel-input
 ```
 
