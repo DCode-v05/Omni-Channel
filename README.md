@@ -1,257 +1,216 @@
-# Omni-Channel: Unified AI Interaction System
+# Omni-Channel
 
-## Project Description
+**A unified AI backend that takes text, voice, documents, and images through one endpoint and turns them into a single, context-aware conversation.**
 
-Omni-Channel is a robust, modular AI backend designed to serve as a unified processing layer for multi-modal user interactions. It synthesizes **Text**, **Audio**, and **Document** inputs into a single, standardized stream of intelligence. By normalizing disparate data sources and leveraging advanced context management, it enables applications to maintain a coherent state and understanding across different mediums of communication.
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white) ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white) ![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=flat&logo=pytorch&logoColor=white) ![Hugging Face](https://img.shields.io/badge/Hugging%20Face-FFD21E?style=flat&logo=huggingface&logoColor=black) ![scikit-learn](https://img.shields.io/badge/scikit--learn-F7931E?style=flat&logo=scikitlearn&logoColor=white) ![React](https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB) ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white) ![Vite](https://img.shields.io/badge/Vite-646CFF?style=flat&logo=vite&logoColor=white)
 
-The system acts as a central hub that receives raw inputs, enriches them with metadata and sentiment analysis, and orchestrates intelligent responses via LLMs.
+## Overview
 
----
+Most chat systems handle one input type well and bolt the rest on later. Omni-Channel starts from the opposite assumption: a user might type a question, send a voice note, drop in a PDF, and paste a screenshot — sometimes all in the same request — and they expect the assistant to treat it as one coherent thought.
 
-## Project Details
+This repo is the backend (FastAPI) plus a React client that does exactly that. A single endpoint accepts text, audio, documents, and images together as `multipart/form-data`, normalizes every modality into plain text, groups related pieces by meaning, decides whether the request is clear enough to answer (and asks a follow-up if it isn't), pulls in relevant organization and user knowledge, and generates a reply whose tone is shaped by the user's detected emotion. For voice replies, the text gets light natural-speech disfluencies before it's spoken back.
 
-### Core Objectives
+I built this during my AI Engineer role at September AI as a standalone realization of a multimodal-orchestration idea. It's a solo build, and the system is functional end to end — backend pipeline, semantic memory, and a voice-mode frontend with on-device voice activity detection.
 
-The primary goal of Omni-Channel is to eliminate the friction between different methods of user interaction.
+## Key Features
 
-- **Unified Normalization**: Whether a user types a message, speaks a voice note, or uploads a PDF, the system converts it into a standardized format for processing.
-- **Intelligent Routing**: Determines the nature of the request (information seeking, action, etc.) and routes it through the appropriate logic pipelines.
-- **State Continuity**: Maintains conversation history and context independent of the channel used (e.g., referencing a document uploaded yesterday while talking via audio today).
+- **One endpoint, four modalities.** `POST /input/omnichannel` accepts any combination of `text`, `audio`, `document`, and `image` in a single request. At least one must be present; all four can arrive at once.
+- **Parallel normalization.** Each modality is normalized concurrently with `asyncio.gather`, so a request with audio + a PDF + an image doesn't process them one after another.
+  - Text — validated and cleaned inline.
+  - Audio — transcribed server-side with OpenAI Whisper (`base` model).
+  - Documents — text extracted from PDF (pdfplumber), DOCX (python-docx), and plain `.txt`.
+  - Images — OCR via PaddleOCR (English, CPU).
+- **Semantic clustering of inputs and history.** Normalized pieces are embedded and grouped by cosine similarity so the model sees coherent "buckets" of related content rather than a flat list. New inputs are matched against clusters carried over from earlier in the session.
+- **Active elicitation.** Before answering, an LLM-driven ambiguity check decides whether the request can actually be answered with what's known. If a pronoun, missing parameter, or vague reference genuinely blocks a useful answer, the API returns clarifying questions instead of guessing.
+- **Context envelope.** A structured object is assembled per request — clusters, conversation history, cluster relationships, an estimated-complexity score, and a reasoning trace — and handed to the LLM as system context.
+- **Organization + user memory.** A memory router runs semantic search over a per-organization knowledge base and a per-user memory, then injects the top matches into the prompt. After each interaction, the user memory learns from the exchange.
+- **Emotion-aware responses.** A DistilRoBERTa emotion classifier reads the user's text; the result is mapped to a response-tone profile (frustrated, excited, happy, calm, and so on) that changes both the content and the instructions sent to the LLM.
+- **Natural voice replies.** For clusters that include audio, the reply is post-processed with disfluencies (fillers, light corrections, emotional sounds) scaled by the detected intensity, then spoken via ElevenLabs TTS on the client.
+- **Session continuity.** Inputs, responses, and clusters are kept per `session_id`, so later turns can reference earlier ones across different channels.
+- **Voice-mode frontend.** A React + TypeScript client with on-device Silero VAD (ONNX, via `onnxruntime-web`) for hands-free turn detection, plus text, attachment, and audio-recorder inputs.
 
-### Key Features
+## How It Works
 
-1.  **Multi-Modal Ingestion Pipeline**:
-    - **Text**: Instant processing and validation.
-    - **Audio**: Server-side transcription using **OpenAI Whisper** and input type detection.
-    - **Documents**: Intelligent extraction and parsing of PDF and Word files.
-2.  **Semantic Context Engine**:
-    - **Clustering**: Uses embeddings to group related inputs, ensuring the LLM has access to the _exact_ relevant history, not just the most recent messages.
-    - **Context Envelope**: Constructs a comprehensive data object containing all necessary session, user, and historical metadata for the LLM.
-3.  **Active Elicitation Protocol**:
-    - The system is designed to be proactive. If input is ambiguous or incomplete, the **Elicitation Resolver** triggers a loop to ask clarifying questions, ensuring high-quality responses.
+The request flow lives in `backend/api/input.py`. Here's the path a request takes.
 
-4.  **Sentiment & Tone Analysis**:
-    - Real-time analysis of user emotion (e.g., frustration, excitement).
-    - Dynamically adjusts the output style. For audio responses, it can inject disfluencies to mimic natural speech patterns based on the user's current engagement level.
+### 1. Ingestion and normalization
 
----
+The endpoint receives the raw form data and attaches metadata (channel, optional `user_id`/`session_id`, timestamp). Each present modality runs its own coroutine:
+
+- `detect_input_type` maps the MIME type to one of `text | audio | document | image`.
+- Files are written to disk under a per-request `input_id` (`storage/disk.py`).
+- `normalisation/dispatcher.py` routes each one to the right normalizer. Whisper handles audio transcription, pdfplumber/python-docx handle documents, PaddleOCR handles images, and text passes through cleaning.
+
+All four run together and the results collapse into a list of `InputItem`s, each carrying its normalized text.
+
+### 2. Semantic clustering
+
+`semantic/clustering.py` embeds the normalized texts with `sentence-transformers/all-MiniLM-L6-v2` and clusters them with scikit-learn's `AgglomerativeClustering` on a precomputed cosine-distance matrix (average linkage, similarity threshold 0.5). When a session already has clusters, new items are matched against each prior cluster's centroid embedding; anything that doesn't fit above the threshold forms a new bucket. Embeddings are cached in an LRU map (max 1000 entries) so repeated text isn't re-encoded.
+
+### 3. Elicitation
+
+`elicitation/resolver.py` takes the newest input plus the clusters and conversation history and runs an LLM-based ambiguity check. The prompt is a step-by-step framework — pronoun resolution, parameter completeness, reference resolution — with a conservative default: only flag for clarification when it's confident (≥80%) that the request can't be answered as-is. If clarification is needed, the endpoint returns early with the questions and never calls the main model.
+
+### 4. Context construction
+
+`context/constructor.py` builds a `ContextEnvelope`: cluster envelopes, conversation history (last N turns), cluster relationships, an estimated-complexity rating from thresholds on cluster/item count and text length, and a human-readable reasoning trace. This is the structured "what the model needs to know" object.
+
+### 5. Sentiment and memory
+
+The user's text is run through the emotion classifier (`j-hartmann/emotion-english-distilroberta-base`), and the label is mapped to a tone profile. In parallel, per cluster, the memory router (`memory/memory_router.py`) searches organization and user memory by cosine similarity (scope threshold 0.55) and folds the best matches into the envelope.
+
+### 6. Response generation
+
+`llm/groq_client.py` calls `llama-3.1-8b-instant` through the Groq API (temperature 0.2, max 150 tokens) with a system prompt that stitches together the response guidelines, the sentiment-aware tone instructions, conversation history, the current clusters, and any retrieved knowledge. Each cluster gets its own response.
+
+### 7. Voice shaping and persistence
+
+If a cluster contained audio, the reply runs through `tts/disfluency.py`, which injects fillers and natural corrections at an intensity that scales with detected excitement. Finally, the session store records the inputs and responses, and the user memory learns from the interaction for next time. The client speaks the reply with ElevenLabs (`eleven_flash_v2`).
+
+## Highlights
+
+No formal benchmarks ship with the repo, but the moving parts are concrete:
+
+- 4 input modalities through 1 endpoint, normalized in parallel.
+- Embeddings: `all-MiniLM-L6-v2`; clustering via agglomerative average-linkage at 0.5 cosine similarity.
+- Generation: `llama-3.1-8b-instant` (Groq), temperature 0.2, max 150 tokens, tuned for short conversational replies.
+- Emotion model: 7-class DistilRoBERTa mapped to a response-tone profile.
+- Transcription: Whisper `base`; OCR: PaddleOCR; voice-activity detection: Silero VAD (ONNX) running in the browser.
+- LRU embedding cache (1000 entries) and a memory scope threshold of 0.55 for retrieval.
 
 ## Tech Stack
 
-### Backend
-
-- **Framework**: FastAPI (Python)
-- **LLM Integration**: Groq API
-- **Audio Processing**: OpenAI Whisper, PyTorch
-- **Vector Search**: Sentence Transformers (HuggingFace) with Clustering logic
-- **File Handling**: pdfplumber (PDF), python-docx (DOCX)
-- **Architecture**: Modular Service-based (Normalisation, Elicitation, Semantic, Storage)
-
-### Frontend
-
-- **Framework**: React (Vite)
-- **Language**: TypeScript
-- **Runtime**: Node.js
-
----
+- **Languages:** Python (backend), TypeScript (frontend).
+- **Backend framework:** FastAPI + Uvicorn, Pydantic schemas, `python-multipart`.
+- **LLM:** Groq (`llama-3.1-8b-instant`) via the async Groq client.
+- **Data / ML:** sentence-transformers + Hugging Face Transformers, PyTorch, scikit-learn, NumPy/SciPy, OpenAI Whisper (audio), PaddleOCR / PaddlePaddle + OpenCV (image OCR), pdfplumber and python-docx (documents).
+- **Frontend:** React 19 + Vite, Axios, `onnxruntime-web` with Silero VAD, ElevenLabs TTS.
+- **Storage / state:** local disk for uploads, in-memory session and memory stores; org knowledge loaded from text files at startup.
 
 ## Getting Started
 
-### 1. Clone the repository
+### Prerequisites
+
+- Python 3.10+ and pip
+- Node.js 18+ and npm
+- A Groq API key (backend)
+- An ElevenLabs API key and voice ID (frontend, for spoken replies)
+
+### Installation
 
 ```bash
 git clone https://github.com/DCode-v05/Omni-Channel.git
-cd omnichannel-input
+cd Omni-Channel
 ```
 
-### 2. Backend Setup
-
-Navigate to the backend directory and install Python dependencies.
+**Backend**
 
 ```bash
 cd backend
-# Create a virtual environment (optional but recommended)
 python -m venv venv
-# Activate it (Windows)
-venv\Scripts\activate
-# Install requirements
+# Windows: venv\Scripts\activate
+# macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-**Environment Variables**:
-Create a `.env` file in `backend/` and add your API key (`GROQ_API_KEY`).
+Create `backend/.env`:
 
-### 3. Frontend Setup
+```env
+GROQ_API_KEY=your_groq_api_key
+```
 
-Navigate to the frontend directory and install Node modules.
+**Frontend**
 
 ```bash
 cd ../frontend
 npm install
 ```
 
-**Environment Variables**:
-Create a `.env` file in `frontend/` and add your ElevenLabs configuration:
+Create `frontend/.env`:
 
 ```env
 VITE_ELEVENLABS_API_KEY=your_elevenlabs_api_key
 VITE_ELEVENLABS_VOICE_ID=your_voice_id
+# optional, defaults to http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8000
 ```
 
-### 4. Run the Application
-
-**Backend**:
+### Running
 
 ```bash
-# From /backend
+# backend (from /backend)
 uvicorn main:app --reload
-```
 
-**Frontend**:
-
-```bash
-# From /frontend
+# frontend (from /frontend)
 npm run dev
 ```
 
----
+The first backend run downloads the Whisper, embedding, and emotion models, so give it a moment to warm up. Organization knowledge is loaded from `backend/memory/knowledge_base/` on startup. A `/health` endpoint is available for liveness checks.
 
 ## Usage
 
-- **API Integration**: The backend exposes the `/input/omnichannel` endpoint. This single endpoint handles `multipart/form-data` requests containing text, audio files, and document blobs.
-- **Session Management**: Use the `session_id` parameter to persist context across different calls.
-- **Response handling**: The API returns not just the LLM text, but also sentiment data, potential follow-up questions (if elicitation was triggered), and debug clustering info.
+Send a `multipart/form-data` request to `POST /input/omnichannel`. Provide at least one of `text`, `audio`, `document`, `image`, plus a required `channel`; `user_id` and `session_id` are optional but enable memory and continuity.
 
----
+```bash
+curl -X POST http://localhost:8000/input/omnichannel \
+  -F "channel=web" \
+  -F "session_id=11111111-1111-1111-1111-111111111111" \
+  -F "text=Summarize this and tell me what to do next" \
+  -F "document=@./report.pdf" \
+  -F "image=@./screenshot.png"
+```
+
+The response includes the resolved clusters, one `llm_response` per cluster, the detected sentiment, the full context envelope, and a cluster count. If the elicitation step decides the request is ambiguous, you instead get `needs_clarification: true` and a list of `questions` to ask back. Reuse the same `session_id` across calls so the system can connect a document uploaded earlier to a voice question asked later.
+
+The frontend wraps all of this in a chat UI with a dedicated voice mode: Silero VAD detects when you start and stop speaking, the recording is sent to the same endpoint, and the reply is read back through ElevenLabs.
 
 ## Project Structure
 
 ```
 Omni-Channel/
-│
-├── backend/                # FastAPI Backend Core
-│   ├── api/                # API Endpoints
-│   │   ├── input.py        # Main omnichannel input endpoint
-│   │   └── admin.py        # Admin endpoints
-│   ├── context/            # Context Management
-│   │   ├── constructor.py  # Context envelope builder
-│   │   └── envelope.py     # Context data models
-│   ├── elicitation/        # Ambiguity Resolution
-│   │   └── resolver.py     # Clarification logic
-│   ├── history/            # Session Management
-│   │   └── memory_store.py # In-memory session storage
-│   ├── llm/                # LLM Integration
-│   │   └── groq_client.py  # Groq API client
-│   ├── memory/             # Knowledge Management
-│   │   ├── organization_memory.py  # Company knowledge base
-│   │   ├── user_memory.py          # User personalization
-│   │   ├── memory_router.py        # Memory query routing
-│   │   └── knowledge_base/         # Organization data files
-│   ├── metadata/           # Metadata Enrichment
-│   │   └── enrich.py       # Metadata processing
-│   ├── normalisation/      # Input Processing
-│   │   ├── dispatcher.py   # Input type routing
-│   │   ├── text.py         # Text normalization
-│   │   ├── audio.py        # Whisper transcription
-│   │   ├── document.py     # PDF/DOCX extraction
-│   │   └── image.py        # OCR processing
-│   ├── resolvers/          # Type Detection
-│   │   └── input_type.py   # Input type resolver
-│   ├── schemas/            # Data Models
-│   │   └── models.py       # Pydantic schemas
-│   ├── semantic/           # Semantic Processing
-│   │   ├── embeddings.py   # Embedding generation
-│   │   └── clustering.py   # Semantic clustering logic
-│   ├── sentiment/          # Emotion Analysis
-│   │   └── analyzer.py     # Sentiment detection
-│   ├── storage/            # File Management
-│   │   └── disk.py         # File persistence
-│   ├── tts/                # Speech Enhancement
-│   │   └── disfluency.py   # Natural speech patterns
-│   ├── validators/         # Input Validation
-│   │   └── payload.py      # Payload validators
-│   ├── main.py             # FastAPI application entry
-│   └── requirements.txt    # Python dependencies
-│
-├── frontend/               # React TypeScript Client
+├── backend/
+│   ├── main.py                    # FastAPI app, CORS, startup memory load, /health
+│   ├── api/
+│   │   ├── input.py               # the omnichannel pipeline (orchestrates everything)
+│   │   └── admin.py               # admin endpoints
+│   ├── normalisation/             # per-modality text extraction
+│   │   ├── dispatcher.py          # routes input_type -> normalizer
+│   │   ├── text.py / audio.py     # cleaning / Whisper transcription
+│   │   ├── document.py / image.py # pdfplumber + docx / PaddleOCR
+│   ├── semantic/
+│   │   ├── embeddings.py          # all-MiniLM-L6-v2 + LRU cache + cosine sim
+│   │   └── clustering.py          # agglomerative clustering, session-aware
+│   ├── elicitation/resolver.py    # LLM ambiguity check + clarifying questions
+│   ├── context/                   # context envelope builder + data models
+│   ├── sentiment/analyzer.py      # DistilRoBERTa emotion classifier
+│   ├── memory/                    # org + user memory, router, knowledge_base/
+│   ├── llm/groq_client.py         # Groq call + system-prompt assembly
+│   ├── tts/disfluency.py          # natural-speech post-processing for audio replies
+│   ├── history/memory_store.py    # in-memory session + cluster store
+│   ├── metadata/ resolvers/ schemas/ storage/ validators/
+│   └── requirements.txt
+├── frontend/
 │   ├── src/
-│   │   ├── components/     # UI Components
-│   │   │   ├── OmniInput.tsx       # Unified input component
-│   │   │   ├── VoiceMode.tsx       # Voice conversation mode
-│   │   │   ├── ChatArea.tsx        # Chat display
-│   │   │   ├── ChatMessage.tsx     # Message component
-│   │   │   ├── AudioRecorder.tsx   # Audio recording
-│   │   │   ├── AttachmentButton.tsx # File upload
-│   │   │   ├── TextInput.tsx       # Text input
-│   │   │   └── Icons.tsx           # Icon components
-│   │   ├── modules/        # Core Modules
-│   │   │   ├── audio/      # Audio processing
-│   │   │   └── vad/        # Voice Activity Detection (Silero VAD)
-│   │   ├── services/       # API Services
-│   │   │   ├── api.ts              # Backend API client
-│   │   │   ├── audioPlayer.ts      # Audio playback
-│   │   │   └── ttsEnhancer.ts      # ElevenLabs TTS
-│   │   ├── styles/         # CSS Styles
-│   │   ├── types/          # TypeScript types
-│   │   ├── App.tsx         # Main application
-│   │   └── main.tsx        # Entry point
-│   ├── public/
-│   │   └── models/         # ONNX models (Silero VAD)
-│   ├── package.json        # Node dependencies
-│   ├── tsconfig.json       # TypeScript config
-│   └── vite.config.ts      # Vite configuration
-│
-└── README.md               # Project documentation
+│   │   ├── App.tsx                # main app
+│   │   ├── components/            # OmniInput, VoiceMode, ChatArea, AudioRecorder, ...
+│   │   ├── modules/
+│   │   │   ├── audio/             # capture + playback plumbing
+│   │   │   └── vad/               # Silero VAD wrapper (ONNX)
+│   │   ├── services/              # api.ts, audioPlayer.ts, ttsEnhancer.ts
+│   │   └── styles/ types/
+│   ├── public/models/            # silero_vad.onnx
+│   └── package.json / vite.config.ts / tsconfig.json
+└── README.md
 ```
-
----
-
-## Contributing
-
-Contributions are welcome! To contribute to the Omni-Channel project:
-
-1. **Fork the repository**
-   ```bash
-   git clone https://github.com/DCode-v05/Omni-Channel.git
-   cd Omni-Channel
-   ```
-
-2. **Create a feature branch**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-3. **Make your changes**
-   - Follow the existing code style and structure
-   - Add tests if applicable
-   - Update documentation as needed
-
-4. **Commit your changes**
-   ```bash
-   git commit -m "Add: description of your feature"
-   ```
-
-5. **Push to your branch**
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-6. **Open a Pull Request**
-   - Provide a clear description of your changes
-   - Reference any related issues
-   - Ensure all tests pass
-
-### Development Guidelines
-- **Backend**: Follow PEP 8 style guide for Python code
-- **Frontend**: Use TypeScript strict mode and follow React best practices
-- **Commits**: Use conventional commit messages (feat, fix, docs, etc.)
-- **Testing**: Add unit tests for new features
 
 ---
 
 ## Contact
 
-- **GitHub:** [DCode-v05](https://github.com/DCode-v05)
-- **Email:** denistanb05@gmail.com
+**Portfolio:** [Denistan](https://www.denistan.me)<br>
+**LinkedIn:** [Denistan](https://www.linkedin.com/in/denistanb)<br>
+**GitHub:** [DCode-v05](https://github.com/DCode-v05)<br>
+**LeetCode:** [Denistan_B](https://leetcode.com/u/Denistan_B)<br>
+**Email:** [denistanb05@gmail.com](mailto:denistanb05@gmail.com)
 
----
+Made with ❤️ by **Denistan B**
