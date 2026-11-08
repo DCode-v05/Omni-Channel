@@ -6,7 +6,6 @@ import { AudioManager } from '../modules/audio';
 import { playManagedAudioBlob, stopAudioPlayback } from '../services/audioPlayer';
 import { getProsodyFromSentiment } from '../services/ttsEnhancer';
 
-// Web Speech API type declarations
 interface SpeechRecognition extends EventTarget {
   continuous: boolean;
   interimResults: boolean;
@@ -137,7 +136,6 @@ export const VoiceMode = ({
   const ttsSeqRef = useRef(0);
   const ttsPlayingRef = useRef(false);
 
-  // Speech Recognition for intelligent barge-in
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const bargeInActiveRef = useRef(false);
   const lastClassificationRef = useRef<'cooperative' | 'competitive' | 'unknown' | null>(null);
@@ -146,7 +144,6 @@ export const VoiceMode = ({
     return () => stopVoiceMode();
   }, []);
 
-  // Rule-based classifier for interruptions
   const classifyInterruption = (text: string): 'cooperative' | 'competitive' | 'unknown' => {
     const normalized = text.toLowerCase().trim();
     
@@ -162,7 +159,6 @@ export const VoiceMode = ({
       'wrong', 'incorrect', 'pause', 'halt', 'nope', 'nah', 'not really'
     ];
     
-    // Check for competitive keywords first (higher priority)
     for (const keyword of competitiveKeywords) {
       if (normalized.includes(keyword)) {
         console.log(`[Barge-In Classification] Text: "${text}" → COMPETITIVE (matched keyword: "${keyword}")`);
@@ -170,7 +166,6 @@ export const VoiceMode = ({
       }
     }
     
-    // Check for cooperative keywords
     for (const keyword of cooperativeKeywords) {
       if (normalized.includes(keyword)) {
         console.log(`[Barge-In Classification] Text: "${text}" → COOPERATIVE (matched keyword: "${keyword}")`);
@@ -219,7 +214,6 @@ export const VoiceMode = ({
     }
   };
 
-  // Get Web Speech Recognition instance with browser compatibility
   const getSpeechRecognition = (): SpeechRecognition | null => {
     if (typeof window === 'undefined') return null;
     
@@ -235,7 +229,6 @@ export const VoiceMode = ({
     return new SpeechRecognitionClass();
   };
 
-  // Stop barge-in recognition
   const stopBargeInRecognition = () => {
     if (bargeInActiveRef.current) {
       console.log('[Barge-In] Stopping barge-in recognition');
@@ -245,7 +238,6 @@ export const VoiceMode = ({
       try {
         recognition.stop();
       } catch (e) {
-        // Recognition might already be stopped
       }
       speechRecognitionRef.current = null;
     }
@@ -253,9 +245,7 @@ export const VoiceMode = ({
     lastClassificationRef.current = null;
   };
 
-  // Start barge-in recognition when TTS is playing and user interrupts
   const startBargeInRecognition = () => {
-    // Don't start if already active or TTS not playing
     if (bargeInActiveRef.current || !ttsPlayingRef.current) {
       return;
     }
@@ -265,7 +255,6 @@ export const VoiceMode = ({
     const Recognition = getSpeechRecognition();
     if (!Recognition) {
       console.warn('[Barge-In] Web Speech API not available, falling back to immediate stop');
-      // Fallback: stop TTS immediately
       ttsAbortRef.current?.abort();
       stopAudioPlayback();
       ttsPlayingRef.current = false;
@@ -281,7 +270,6 @@ export const VoiceMode = ({
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
-    // Handle interim results (faster response)
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let interimTranscript = '';
       let finalTranscript = '';
@@ -295,13 +283,11 @@ export const VoiceMode = ({
         }
       }
 
-      // Process interim results for faster classification
       if (interimTranscript) {
         console.log(`[Barge-In] Interim transcript received: "${interimTranscript}"`);
         const classification = classifyInterruption(interimTranscript);
         if (classification === 'competitive') {
           console.log('[Barge-In] ⛔ COMPETITIVE interruption detected (interim) - Stopping TTS immediately');
-          // Stop TTS immediately on competitive interruption
           ttsAbortRef.current?.abort();
           stopAudioPlayback();
           ttsPlayingRef.current = false;
@@ -311,31 +297,26 @@ export const VoiceMode = ({
         lastClassificationRef.current = classification;
       }
 
-      // Process final results
       if (finalTranscript) {
         console.log(`[Barge-In] Final transcript received: "${finalTranscript.trim()}"`);
         const classification = classifyInterruption(finalTranscript);
         if (classification === 'competitive') {
           console.log('[Barge-In] ⛔ COMPETITIVE interruption detected (final) - Stopping TTS');
-          // Stop TTS on competitive interruption
           ttsAbortRef.current?.abort();
           stopAudioPlayback();
           ttsPlayingRef.current = false;
           stopBargeInRecognition();
         } else if (classification === 'cooperative') {
           console.log('[Barge-In] ✅ COOPERATIVE interruption detected (final) - Continuing TTS playback');
-          // Continue TTS, stop recognition
           stopBargeInRecognition();
         } else {
           console.log('[Barge-In] ❓ UNKNOWN interruption (final) - Keeping recognition active');
         }
-        // If unknown, keep listening
       }
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       console.error('Speech recognition error:', event.error);
-      // On error, fallback to immediate stop
       if (ttsPlayingRef.current) {
         ttsAbortRef.current?.abort();
         stopAudioPlayback();
@@ -345,8 +326,6 @@ export const VoiceMode = ({
     };
 
     recognition.onend = () => {
-      // If recognition ends and TTS is still playing, it means it was cooperative or unknown
-      // Reset the ref but don't stop TTS
       speechRecognitionRef.current = null;
       bargeInActiveRef.current = false;
     };
@@ -355,7 +334,6 @@ export const VoiceMode = ({
       recognition.start();
     } catch (error) {
       console.error('Failed to start speech recognition:', error);
-      // Fallback: stop TTS immediately
       if (ttsPlayingRef.current) {
         ttsAbortRef.current?.abort();
         stopAudioPlayback();
@@ -394,7 +372,6 @@ const monitorVoiceActivity = () => {
       if (hasVoice) {
         setIsListening(true);
 
-        // Intelligent barge-in: use speech recognition to classify interruption
         if (ttsPlayingRef.current && !bargeInActiveRef.current) {
           console.log('[Barge-In] Voice detected during TTS playback - Starting classification');
           startBargeInRecognition();
@@ -540,13 +517,11 @@ const getPrimaryResponse = (
         signal: controller.signal,
         onEnd: () => {
           ttsPlayingRef.current = false;
-          // Stop barge-in recognition when TTS ends naturally
           stopBargeInRecognition();
         },
       });
     } catch (err: any) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        // Stop barge-in recognition when TTS is aborted
         stopBargeInRecognition();
         return;
       }
@@ -748,7 +723,6 @@ const getPrimaryResponse = (
     pendingChunkTimestampRef.current = null;
     pendingChunkDurationRef.current = null;
 
-    // Stop barge-in recognition on cleanup
     stopBargeInRecognition();
 
     if (vadRef.current) {

@@ -24,18 +24,14 @@ function App() {
     
     const currentInputId = response.input_id;
     
-    // Extract user input from the response
-    // Only process items that belong to THIS request (current input_id)
     if (response.clusters && response.clusters.length > 0) {
       response.clusters.forEach((cluster: any) => {
         cluster.items?.forEach((item: any) => {
-          // Check if this item belongs to the current request
           const itemInputId = item.original_data?.gateway_output?.input_id;
           if (itemInputId !== currentInputId) {
-            return; // Skip items from previous requests
+            return;
           }
           
-          // Try multiple sources for the input text
           const inputText = item.normalized_text || 
                           item.text_preview || 
                           item.original_data?.gateway_output?.raw_text || 
@@ -52,7 +48,6 @@ function App() {
               fileName: fileName ? fileName.split('/').pop() : undefined,
             };
             setMessages((prev) => {
-              // Check if this message already exists to prevent duplicates
               const exists = prev.some(msg => msg.id === userMessage.id);
               return exists ? prev : [...prev, userMessage];
             });
@@ -61,10 +56,7 @@ function App() {
       });
     }
 
-    // Add assistant responses - only for responses that correspond to current request
-    // We need to check which buckets were updated in this request
     if (response.responses && response.responses.length > 0) {
-      // Get bucket IDs that have items from current request
       const currentBuckets = new Set<number>();
       if (response.clusters) {
         response.clusters.forEach((cluster: any) => {
@@ -78,7 +70,6 @@ function App() {
       }
       
       response.responses.forEach((resp: any) => {
-        // Only add responses for buckets that were updated in this request
         if (currentBuckets.has(resp.bucket_id) && resp.llm_response) {
           const assistantMessage: ChatMessage = {
             id: `${currentInputId}-assistant-${resp.bucket_id}`,
@@ -88,7 +79,6 @@ function App() {
             timestamp: new Date(),
           };
           setMessages((prev) => {
-            // Check if this response already exists
             const exists = prev.some(msg => msg.id === assistantMessage.id);
             return exists ? prev : [...prev, assistantMessage];
           });
@@ -96,7 +86,6 @@ function App() {
       });
     }
 
-    // Handle clarification requests
     if (response.needs_clarification && response.questions) {
       const clarificationMessage: ChatMessage = {
         id: `${currentInputId}-clarification`,

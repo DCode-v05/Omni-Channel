@@ -398,7 +398,6 @@ body {
   font-size: 0.875rem;
 }
 
-/* Chat Area Styles */
 .chat-area {
   flex: 1;
   display: flex;
@@ -564,7 +563,6 @@ body {
   color: #999;
 }
 
-/* Update app-main to work better with chat */
 .app-main {
   flex: 1;
   display: flex;
