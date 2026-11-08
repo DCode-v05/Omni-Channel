@@ -3,3 +3,15 @@
 **/node_modules/
 **/storage/file_storage/
 **/__pycache__/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.pyc
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
